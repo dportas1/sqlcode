@@ -4,7 +4,7 @@
 	Generate Insert / Merge statements for SQL Server 2005, 2008/R2, 2012, 2014, 2016
 
 	by dportas <AT> acm DOT org
-	v2.30   2016-06-25
+	v2.31   2016-06-25
 
 	Generates INSERT statements or MERGE statements from data in a table
 	Tested on SQL Server 2005, 2008/R2, 2012, 2014, 2016
@@ -44,6 +44,8 @@
 
 			@page			Maximum number of rows per statement
 
+			@quote			Quoted identifier character (default is [ ] )
+
 
 	Examples:
 
@@ -51,7 +53,9 @@
 			EXEC dbo.geninsert @schemaname = 'dbo', @objname = 'tbl', @script = 'S' ;
 			EXEC dbo.geninsert @schemaname = 'dbo', @objname = 'tbl', @script = 'M', @mergekey = 'keycol' ;
 			EXEC dbo.geninsert @objname = '[dbo].[Contacts]', @script = 'M';
-
+			EXEC dbo.geninsert @objname = 'Contacts', @script = 'M', @quote = '';
+			EXEC dbo.geninsert @objname = 'Contacts', @script = 'U', @where = 'ContactId <= 10', @quote = '';
+			EXEC dbo.geninsert @objname = '#t', @quote = '';
 
 */
 
@@ -61,12 +65,13 @@ CREATE PROC [dbo].[geninsert]
 		@objname    NVARCHAR(128) = N'',
 		@script     CHAR(1) = 'I' /* I = Inserts, S = Single Insert, M = Merge, U = Upsert */,
 		@mergekey   NVARCHAR(MAX) = N'',
-		@where		NVARCHAR(MAX) = N'',
+		@where      NVARCHAR(MAX) = N'',
 		@identity   BIT = 1,
 		@rowversion BIT = 0,
 		@filestream BIT = 0,
 		@geo        BIT = 0,
 		@page       INT = 0,
+		@quote      NVARCHAR(2) = NULL,
 		@printsql   BIT = 0 -- Print dynamic SQL for debug only
 )
 AS
@@ -76,6 +81,7 @@ BEGIN;
 		DECLARE	@object_id BIGINT,
 				@tmp_object_id BIGINT,
 				@fullobjectname NVARCHAR(300),
+				@sqlobjectname NVARCHAR(300),
 				@sql NVARCHAR(MAX),
 				@ColumnList NVARCHAR(MAX),
 				@SetList NVARCHAR(MAX),
@@ -85,7 +91,8 @@ BEGIN;
 				@unqindex BIGINT,
 				@rowcount INT,
 				@nextid INT,
-				@floatstyle NCHAR(1);
+				@floatstyle NCHAR(1),
+				@qt BIT;
 
 		/* Init variables */
 		SELECT	@sql = N'',
@@ -94,15 +101,22 @@ BEGIN;
 				@KeyList = N'',
 				@nextid = 1,
 				@identity = ISNULL(@identity,1),
-				@geo = ISNULL(@geo,0),
 				@rowversion = ISNULL(@rowversion,0),
-				@filestream = ISNULL(@filestream,0);
+				@filestream = ISNULL(@filestream,0),
+				@geo = ISNULL(@geo,0),
+				@qt = 1;
 
 		IF		CAST(SERVERPROPERTY('ProductMajorVersion') AS SMALLINT) >= 13
 				/* Style 3 improves the accuracy of float-string conversion in SQL Server 2016 */
 				SET @floatstyle = N'3';
 		ELSE
 				SET @floatstyle = N'2';
+
+		IF		@quote = N''
+		SET		@qt = 0; -- No quoting of table or column names
+
+		IF		@quote IS NULL OR QUOTENAME(N'x',@quote) IS NULL
+		SET		@quote = N'['; -- default to [ ] quoting
 
 		/* object in current database */
 		SET		@object_id = OBJECT_ID(QUOTENAME(@schemaname)+N'.'+QUOTENAME(@objname));
@@ -135,7 +149,16 @@ BEGIN;
 
 		/* Specified table object_id in current db */
 		IF		@object_id IS NOT NULL
-		SELECT	@fullobjectname = QUOTENAME(OBJECT_SCHEMA_NAME(@object_id))+N'.'+QUOTENAME(OBJECT_NAME(@object_id)),
+		SELECT	@fullobjectname =
+					CASE WHEN @qt = 1
+						THEN QUOTENAME(OBJECT_SCHEMA_NAME(@object_id), @quote)
+						ELSE OBJECT_SCHEMA_NAME(@object_id)
+					END+N'.'+
+					CASE WHEN @qt = 1
+						THEN QUOTENAME(OBJECT_NAME(@object_id), @quote)
+						ELSE OBJECT_NAME(@object_id)
+					END,
+				@sqlobjectname = QUOTENAME(OBJECT_SCHEMA_NAME(@object_id))+N'.'+QUOTENAME(OBJECT_NAME(@object_id)),
 				@identity =
 				CASE WHEN @identity = 1 AND
 				(		SELECT	TOP (1) 1
@@ -145,7 +168,8 @@ BEGIN;
 
 		/* Specified table object_id in tempdb */
 		IF		@tmp_object_id IS NOT NULL
-		SELECT	@fullobjectname = QUOTENAME(@objname),
+		SELECT	@fullobjectname = CASE WHEN @qt = 1 THEN QUOTENAME(@objname, @quote) ELSE @objname END,
+				@sqlobjectname = QUOTENAME(@objname),
 				@identity =
 				CASE WHEN @identity = 1 AND
 				(		SELECT	TOP (1) 1
@@ -352,18 +376,18 @@ BEGIN;
 				@ColumnList = @ColumnList +
 								CASE
 									WHEN @script = 'I'
-										THEN N',' + REPLACE(CAST(QUOTENAME(t.ColumnName) AS NVARCHAR(MAX)),N'''',N'''''')
-									ELSE     N',' +         CAST(QUOTENAME(t.ColumnName) AS NVARCHAR(MAX))
+										THEN N',' + REPLACE(CAST(CASE WHEN @qt = 1 THEN QUOTENAME(t.ColumnName,@quote) ELSE N' '+t.ColumnName END AS NVARCHAR(MAX)),N'''',N'''''')
+									ELSE     N',' +         CAST(CASE WHEN @qt = 1 THEN QUOTENAME(t.ColumnName,@quote) ELSE N' '+t.ColumnName END AS NVARCHAR(MAX))
 								END,
 				@SetList = @SetList +
 								CASE WHEN t.is_identity = 1 THEN N''
-								ELSE CHAR(13) + CHAR(10) + N',' + QUOTENAME(t.ColumnName) + N' = s.' + QUOTENAME(t.ColumnName) END,
+								ELSE CHAR(13) + CHAR(10) + N',' + CASE WHEN @qt = 1 THEN QUOTENAME(t.ColumnName,@quote) ELSE t.ColumnName END + N' = s.' + CASE WHEN @qt = 1 THEN QUOTENAME(t.ColumnName,@quote) ELSE t.ColumnName END END,
 				@KeyList = @KeyList +
 								CASE
 									WHEN t.is_key = 1 OR (@unqindex IS NULL AND CHARINDEX(N','+t.ColumnName+N',',N','+@mergekey+N',')>0)
-										THEN CHAR(13) + CHAR(10) + N'AND t.' + QUOTENAME(t.ColumnName) + N' = s.' + QUOTENAME(t.ColumnName)
+										THEN CHAR(13) + CHAR(10) + N'AND t.' + CASE WHEN @qt = 1 THEN QUOTENAME(t.ColumnName,@quote) ELSE t.ColumnName END + N' = s.' + CASE WHEN @qt = 1 THEN QUOTENAME(t.ColumnName,@quote) ELSE t.ColumnName END
 									WHEN (@script = 'M' OR @script = 'U') AND t.is_identity = 1 AND @identity = 1 AND @unqindex IS NULL AND ISNULL(@mergekey,N'') = N''
-										THEN CHAR(13) + CHAR(10) + N'AND t.' + QUOTENAME(t.ColumnName) + N' = s.' + QUOTENAME(t.ColumnName)
+										THEN CHAR(13) + CHAR(10) + N'AND t.' + CASE WHEN @qt = 1 THEN QUOTENAME(t.ColumnName,@quote) ELSE t.ColumnName END + N' = s.' + CASE WHEN @qt = 1 THEN QUOTENAME(t.ColumnName,@quote) ELSE t.ColumnName END
 								ELSE N'' END
 		FROM	@col AS t
 		ORDER	BY ColumnOrder;
@@ -376,7 +400,7 @@ BEGIN;
 		END;
 
 		/* Tidy up the dynamic SQL delimiters */
-		SET		@ColumnList = STUFF(@ColumnList,1,1,N'');
+		SET		@ColumnList = STUFF(@ColumnList,1,1,N'') + CASE WHEN @qt = 0 THEN N' ' ELSE N'' END;
 		SET		@KeyList    = STUFF(@KeyList,1,6,N' ');
 		SET		@SetList    = STUFF(@SetList,1,3,N' ');
 
@@ -394,7 +418,7 @@ BEGIN;
 				SET		@endrow   = N')';
 		END;
 
-		SET		@sql    = STUFF(@sql,1,6,N'SELECT N'''+@startrow+N'''+') + N'+ '+QUOTENAME(@endrow,N'''') + N' COLLATE Latin1_General_BIN FROM '+@fullobjectname
+		SET		@sql    = STUFF(@sql,1,6,N'SELECT N'''+@startrow+N'''+') + N'+ '+QUOTENAME(@endrow,N'''') + N' COLLATE Latin1_General_BIN FROM '+@sqlobjectname
 		SET		@sql    = @sql + ISNULL(N' WHERE ('+ NULLIF(LTRIM(RTRIM(@where)),N'') + N')',N'');
 		SET		@sql    = @sql + N';';
 		
