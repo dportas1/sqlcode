@@ -1,5 +1,3 @@
-drop proc geninsert
-go
 /*
 
 	geninsert.sql
