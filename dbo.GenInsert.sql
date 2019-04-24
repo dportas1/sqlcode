@@ -1,10 +1,12 @@
+drop proc geninsert
+go
 /*
 
 	geninsert.sql
 	Generate Insert / Merge statements for SQL Server 2005, 2008/R2, 2012, 2014, 2016
 
 	by dportas <AT> acm DOT org
-	v2.24   2016-06-25
+	v2.30   2016-06-25
 
 	Generates INSERT statements or MERGE statements from data in a table
 	Tested on SQL Server 2005, 2008/R2, 2012, 2014, 2016
@@ -15,7 +17,9 @@
 	Parameters:
 
 			@schemaname		Table schema name
+
 			@objname		Table name / view name / temp table name
+
 			@script			Syntax of script to be produced:
 							I = One INSERT statement per row (default option, supported by vs.2005,2008,2012,2014,2016)
 							S = Single set-based INSERT for all rows (generated script will be valid for vs.2008 + later only)
@@ -28,14 +32,17 @@
 
 			@where			Optional WHERE clause specifying the data to be included
 
-			@identity		1 = include IDENTITY column (if any) in the script using the IDENTITY_INSERT option (default option)
-							0 = don't include IDENTITY
+			@identity		0 = don't include IDENTITY
+							1 = include IDENTITY column (if any) in the script using the IDENTITY_INSERT option (default option)
 
-			@rowversion		1 = include ROWVERSION / TIMESTAMP columns (as VARBINARY)
-							0 = don't include ROWVERSION / TIMESTAMP (default option)
+			@rowversion		0 = don't include ROWVERSION / TIMESTAMP (default option)
+							1 = include ROWVERSION / TIMESTAMP columns (as VARBINARY)
 
-			@filestream		1 = include FILESTREAM columns
-							0 = don't include FILESTREAM (default option)
+			@filestream		0 = don't include FILESTREAM (default option)
+							1 = include FILESTREAM columns
+
+			@geo			0 = script spatial values as binary (default option)
+							1 = script spatial values as strings
 
 			@page			Maximum number of rows per statement
 
@@ -45,19 +52,22 @@
 			EXEC dbo.geninsert @schemaname = 'dbo', @objname = 'tbl' ;
 			EXEC dbo.geninsert @schemaname = 'dbo', @objname = 'tbl', @script = 'S' ;
 			EXEC dbo.geninsert @schemaname = 'dbo', @objname = 'tbl', @script = 'M', @mergekey = 'keycol' ;
+			EXEC dbo.geninsert @objname = '[dbo].[Contacts]', @script = 'M';
+
 
 */
 
 CREATE PROC [dbo].[geninsert]
 (
-		@schemaname NVARCHAR(128) = '',
-		@objname    NVARCHAR(128),
+		@schemaname NVARCHAR(128) = N'',
+		@objname    NVARCHAR(128) = N'',
 		@script     CHAR(1) = 'I' /* I = Inserts, S = Single Insert, M = Merge, U = Upsert */,
 		@mergekey   NVARCHAR(MAX) = N'',
 		@where		NVARCHAR(MAX) = N'',
 		@identity   BIT = 1,
 		@rowversion BIT = 0,
 		@filestream BIT = 0,
+		@geo        BIT = 0,
 		@page       INT = 0,
 		@printsql   BIT = 0 -- Print dynamic SQL for debug only
 )
@@ -76,21 +86,38 @@ BEGIN;
 				@endrow NVARCHAR(10),
 				@unqindex BIGINT,
 				@rowcount INT,
-				@id INT;
+				@nextid INT,
+				@floatstyle NCHAR(1);
 
 		/* Init variables */
 		SELECT	@sql = N'',
 				@ColumnList = N'',
 				@SetList = N'',
 				@KeyList = N'',
-				@id = 1;
+				@nextid = 1,
+				@identity = ISNULL(@identity,1),
+				@geo = ISNULL(@geo,0),
+				@rowversion = ISNULL(@rowversion,0),
+				@filestream = ISNULL(@filestream,0);
+
+		IF		CAST(SERVERPROPERTY('ProductMajorVersion') AS SMALLINT) >= 13
+				/* Style 3 improves the accuracy of float-string conversion in SQL Server 2016 */
+				SET @floatstyle = N'3';
+		ELSE
+				SET @floatstyle = N'2';
 
 		/* object in current database */
 		SET		@object_id = OBJECT_ID(QUOTENAME(@schemaname)+N'.'+QUOTENAME(@objname));
 
 		/* object in tempdb */
-		IF		@object_id IS NULL AND @objname LIKE '#%'
+		IF		@object_id IS NULL AND @objname LIKE N'#%'
 		SET		@tmp_object_id = OBJECT_ID(N'[tempdb]..'+QUOTENAME(@objname));
+
+		/* two-part name in either schema or object parameter */
+		IF		@object_id IS NULL
+		AND		@tmp_object_id IS NULL
+		AND		(@schemaname IS NULL OR @objname IS NULL OR @schemaname = N'' OR @objname = N'')
+		SET		@object_id = COALESCE(OBJECT_ID(@schemaname),OBJECT_ID(@objname));
 
 		/* Raiserror if table was not found */
 		IF		@object_id IS NULL
@@ -161,7 +188,7 @@ BEGIN;
 						AND		@identity = 0)
 						OR		(st.name IN (N'timestamp',N'rowversion')
 						AND		@rowversion = 0)
-						OR		(st.name IS NULL AND t.name = N'hierarchyid'))
+						OR		(st.name IS NULL AND t.name  IN (N'hierarchyid',N'geography',N'geometry')))
 						AND		i.is_included_column = 0
 				) x
 				ON		i.index_id = x.index_id
@@ -192,7 +219,7 @@ BEGIN;
 						AND		@identity = 0)
 						OR		(st.name IN (N'timestamp',N'rowversion')
 						AND		@rowversion = 0)
-						OR		(st.name IS NULL AND t.name = N'hierarchyid'))
+						OR		(st.name IS NULL AND t.name IN (N'hierarchyid',N'geography',N'geometry')))
 						AND		i.is_included_column = 0
 				) x
 				ON		i.index_id = x.index_id
@@ -255,7 +282,7 @@ BEGIN;
 				AND		(ISNULL(st.name,N'') NOT IN (N'timestamp',N'rowversion')
 				OR		@rowversion = 1)
 				AND		(st.name IS NOT NULL
-				OR		(st.name IS NULL AND t.name = N'hierarchyid'))
+				OR		(st.name IS NULL AND t.name IN (N'hierarchyid',N'geography',N'geometry')))
 		) AS t;
 
 		IF		@tmp_object_id IS NOT NULL
@@ -294,25 +321,33 @@ BEGIN;
 				AND		(ISNULL(st.name,N'') NOT IN (N'timestamp',N'rowversion')
 				OR		@rowversion = 1)
 				AND		(st.name IS NOT NULL
-				OR		(st.name IS NULL AND t.name = N'hierarchyid'))
+				OR		(st.name IS NULL AND t.name IN (N'hierarchyid',N'geography',N'geometry')))
 		) AS t;
 
 		SELECT	/* Create a SELECT list that will return the actual values from the table */
 				@sql = @sql + N'+'', ''+' +
 								CASE
-									WHEN t.TypeName IN ('bigint','int','smallint','tinyint','numeric','decimal','float','money','smallmoney','bit')
-										THEN N'ISNULL(CAST(' + QUOTENAME(t.ColumnName) + ' AS NVARCHAR(40)),N''NULL'')'
-									WHEN t.TypeName = 'date'
+									WHEN t.TypeName IN (N'bigint',N'int',N'smallint',N'tinyint',N'numeric',N'decimal',N'money',N'smallmoney',N'bit')
+										THEN N'ISNULL(CAST(' + QUOTENAME(t.ColumnName) + N' AS NVARCHAR(40)),N''NULL'')'
+									WHEN t.TypeName IN (N'float',N'real')
+										THEN N'ISNULL(CONVERT(NVARCHAR(40),' + QUOTENAME(t.ColumnName) + N',' + @floatstyle + N'),N''NULL'')'
+									WHEN t.TypeName = N'date'
 										THEN N'ISNULL(''''''''+CONVERT(NVARCHAR(10),' + QUOTENAME(t.ColumnName) + N',120)+'''''''',N''NULL'')'
-									WHEN t.TypeName IN ('datetime','smalldatetime')
+									WHEN t.TypeName IN (N'datetime',N'smalldatetime')
 										THEN N'ISNULL(''''''''+CONVERT(NVARCHAR(30),' + QUOTENAME(t.ColumnName) + N',126)+'''''''',N''NULL'')'
-									WHEN t.TypeName IN ('datetime2')
+									WHEN t.TypeName = N'datetime2'
 										THEN N'ISNULL(''''''''+CONVERT(NVARCHAR(30),' + QUOTENAME(t.ColumnName) + N',121)+'''''''',N''NULL'')'
-									WHEN t.TypeName IN ('binary','varbinary','timestamp','rowversion','image','hierarchyid')
+									WHEN t.TypeName IN (N'geography',N'geometry') AND @geo = 0
 										THEN N'ISNULL(CASE DATALENGTH(' + QUOTENAME(t.ColumnName) + N') WHEN 0 THEN CAST(N''0x'' AS NVARCHAR(MAX)) ELSE CAST( master.dbo.fn_varbintohexstr(CAST(' + QUOTENAME(t.ColumnName) + N' AS VARBINARY(MAX))) AS NVARCHAR(MAX)) END,N''NULL'')'
-									WHEN t.TypeName IN ('char','varchar','text')
+									WHEN t.TypeName = N'geometry' AND @geo = 1
+										THEN N'ISNULL(''geometry::STGeomFromText(''''''+' + QUOTENAME(t.ColumnName) + N'.ToString()+'''''',''+ CAST(' + QUOTENAME(t.ColumnName) + N'.STSrid AS NVARCHAR(10))+ '')'',N''NULL'')'
+									WHEN t.TypeName = N'geography' AND @geo = 1
+										THEN N'ISNULL(''geography::STGeomFromText(''''''+' + QUOTENAME(t.ColumnName) + N'.ToString()+'''''',''+ CAST(' + QUOTENAME(t.ColumnName) + N'.STSrid AS NVARCHAR(10))+ '')'',N''NULL'')'
+									WHEN t.TypeName IN (N'binary',N'varbinary',N'timestamp',N'rowversion',N'image',N'hierarchyid')
+										THEN N'ISNULL(CASE DATALENGTH(' + QUOTENAME(t.ColumnName) + N') WHEN 0 THEN CAST(N''0x'' AS NVARCHAR(MAX)) ELSE CAST( master.dbo.fn_varbintohexstr(CAST(' + QUOTENAME(t.ColumnName) + N' AS VARBINARY(MAX))) AS NVARCHAR(MAX)) END,N''NULL'')'
+									WHEN t.TypeName IN (N'char',N'varchar',N'text')
 										THEN N'ISNULL(''''''''+REPLACE(CAST(' + QUOTENAME(t.ColumnName) + N' AS NVARCHAR(MAX)),'''''''','''''''''''')+'''''''',N''NULL'')'
-									WHEN t.TypeName IN ('nchar','nvarchar','ntext')
+									WHEN t.TypeName IN (N'nchar',N'nvarchar',N'ntext')
 										THEN N'ISNULL(''N''''''+REPLACE(CAST(' + QUOTENAME(t.ColumnName) + N' AS NVARCHAR(MAX)),'''''''','''''''''''')+'''''''',N''NULL'')'
 									ELSE     N'ISNULL(''''''''+REPLACE(CAST(' + QUOTENAME(t.ColumnName) + N' AS NVARCHAR(MAX)),'''''''','''''''''''')+'''''''',N''NULL'')'
 								END +CHAR(10)+CHAR(13),
@@ -357,8 +392,8 @@ BEGIN;
 		/* Set-based INSERT or MERGE was specified. Rows are bracketed as row-value constructors */
 		IF		@script = 'S' OR @script = 'M' OR @script = 'U'
 		BEGIN	;
-				SET		@startrow = N'(';
-				SET		@endrow   = N'),';
+				SET		@startrow = N',(';
+				SET		@endrow   = N')';
 		END;
 
 		SET		@sql    = STUFF(@sql,1,6,N'SELECT N'''+@startrow+N'''+') + N'+ '+QUOTENAME(@endrow,N'''') + N' COLLATE Latin1_General_BIN FROM '+@fullobjectname
@@ -413,9 +448,16 @@ BEGIN;
 		SET		@rowcount = @@ROWCOUNT;
 
 		IF		@script = 'S' OR @script = 'M' OR @script = 'U'
-		/* Remove final delimiters if this is a single INSERT or MERGE statement */
+		/* Remove initial delimiters if this is a single INSERT or MERGE statement */
 		UPDATE	#result_6EC1D0F69CED499B8D9A3AE6DD9C215C_
-		SET		txt = STUFF(txt, LEN(txt),1,CASE @script WHEN 'S' THEN N';' ELSE N'' END)
+		SET		txt = STUFF(txt,1,1,N' ')
+		WHERE	id % @page = 1
+		OR		@page = 1;
+
+		IF		@script = 'S'
+		/* Add terminating semicolons if this is a single INSERT */
+		UPDATE	#result_6EC1D0F69CED499B8D9A3AE6DD9C215C_
+		SET		txt = txt + N';'
 		WHERE	id % @page = 0
 		OR		id = SCOPE_IDENTITY();
 
@@ -449,7 +491,7 @@ BEGIN;
 		/* Turn off IDENTITY_INSERT if we need to */
 		INSERT	INTO @hdr (txt,seq) VALUES (N'SET IDENTITY_INSERT '+@fullobjectname+N' OFF;',2);
 
-		WHILE	@id <= @rowcount
+		WHILE	@nextid <= @rowcount
 		BEGIN	;
 
 				/* Output the final results */
@@ -463,8 +505,8 @@ BEGIN;
 
 						SELECT	seq, id, txt
 						FROM	#result_6EC1D0F69CED499B8D9A3AE6DD9C215C_
-						WHERE	id >= @id
-						AND		id <  @id + @page
+						WHERE	id >= @nextid
+						AND		id <  @nextid + @page
 
 						UNION	ALL
 						SELECT	seq, id, txt
@@ -473,7 +515,7 @@ BEGIN;
 				) t
 				ORDER	BY seq, id;
 
-				SET		@id = @id + @page;
+				SET		@nextid = @nextid + @page;
 
 		END;
 
