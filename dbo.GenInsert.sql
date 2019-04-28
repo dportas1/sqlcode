@@ -56,7 +56,7 @@
 			EXEC dbo.geninsert @objname = 'Contacts', @script = 'M', @quote = '';
 			EXEC dbo.geninsert @objname = 'Contacts', @script = 'U', @where = 'ContactId <= 10', @quote = '';
 			EXEC dbo.geninsert @objname = '#t', @quote = '';
-
+			EXEC sp_MSforeachtable 'EXEC dbo.geninsert @objname =''?'', @script =''S'', @quote =''''';
 */
 
 CREATE PROC [dbo].[geninsert]
@@ -407,7 +407,7 @@ BEGIN;
 		/* INSERT was specified as the script option so the INSERT statement needs to be on every line (@startrow, @endrow) */
 		IF		@script = 'I'
 		BEGIN	;
-				SET		@startrow = N'INSERT INTO '+@fullobjectname+N' ('+@ColumnList+N') VALUES (';
+				SET		@startrow = N'INSERT INTO '+REPLACE(@fullobjectname,N'''',N'''''')+N' ('+@ColumnList+N') VALUES (';
 				SET		@endrow   = N');';
 		END;
 
