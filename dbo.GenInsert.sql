@@ -3,11 +3,11 @@
 	geninsert.sql
 	Generate Insert / Merge statements for SQL Server 2005, 2008/R2, 2012, 2014, 2016
 
-	by dportas <AT> acm DOT org
-	v2.31   2016-06-25
+	https://tinyurl.com/geninsert
+	v2.32   2019-05-05
 
 	Generates INSERT statements or MERGE statements from data in a table
-	Tested on SQL Server 2005, 2008/R2, 2012, 2014, 2016
+	Tested on SQL Server 2005SP2, 2008/R2, 2012, 2014, 2016
 
 	Public domain. No warranties.
 
@@ -19,7 +19,7 @@
 			@objname		Table name / view name / temp table name
 
 			@script			Syntax of script to be produced:
-							I = One INSERT statement per row (default option, supported by vs.2005,2008,2012,2014,2016)
+							I = One INSERT statement per row (default option, supported by all SQL versions)
 							S = Single set-based INSERT for all rows (generated script will be valid for vs.2008 + later only)
 							M = Merge (MERGE with INSERT,UPDATE,DELETE clauses - generated script will be valid for vs.2008 + later only)
 							U = Upsert (MERGE with INSERT,UPDATE clauses - generated script will be valid for vs.2008 + later only)
@@ -29,6 +29,8 @@
 							By default the merge option will use a PRIMARY KEY, UNIQUE constraint/index or IDENTITY column unless the @mergekey option is specified
 
 			@where			Optional WHERE clause specifying the data to be included
+
+			@targetname		Target table name if different from @objname
 
 			@identity		0 = don't include IDENTITY
 							1 = include IDENTITY column (if any) in the script using the IDENTITY_INSERT option (default option)
@@ -49,14 +51,37 @@
 
 	Examples:
 
-			EXEC dbo.geninsert @schemaname = 'dbo', @objname = 'tbl' ;
-			EXEC dbo.geninsert @schemaname = 'dbo', @objname = 'tbl', @script = 'S' ;
-			EXEC dbo.geninsert @schemaname = 'dbo', @objname = 'tbl', @script = 'M', @mergekey = 'keycol' ;
-			EXEC dbo.geninsert @objname = '[dbo].[Contacts]', @script = 'M';
-			EXEC dbo.geninsert @objname = 'Contacts', @script = 'M', @quote = '';
-			EXEC dbo.geninsert @objname = 'Contacts', @script = 'U', @where = 'ContactId <= 10', @quote = '';
-			EXEC dbo.geninsert @objname = '#t', @quote = '';
+		-- Generate one INSERT per row for the Production.Product table
+			EXEC dbo.geninsert @schemaname = 'Production', @objname = 'Product';
+
+		-- One INSERT for upto 1000 rows (@script = 'S')
+			EXEC dbo.geninsert @schemaname = 'Production', @objname = 'Product', @script = 'S';
+
+		-- Generate a MERGE statement (@script = 'M') based on a specified key (ProductNumber)
+			EXEC dbo.geninsert @schemaname = 'Production', @objname = 'Product', @script = 'M', @mergekey = 'ProductNumber';
+
+		-- Specify a two-part name instead of separate object and schema names, don't include the IDENTITY column (@identity = 0)
+			EXEC dbo.geninsert @objname = '[Production].[Product]', @script = 'M', @identity = 0;
+
+		-- Specify a different name for the target table (the target table does not need to exist when the script is generated)
+			EXEC dbo.geninsert @objname = 'Production.Product', @script = 'M', @targetname = 'NewProduct';
+
+		-- Without quoting (@quote = '')
+			EXEC dbo.geninsert @objname = 'Production.Product', @script = 'M', @quote = '';
+
+		-- With quoting using "
+			EXEC dbo.geninsert @objname = 'Production.Product', @script = 'M', @quote = '"';
+
+		-- Specify a WHERE clause
+			EXEC dbo.geninsert @objname = 'Production.Product', @script = 'U', @where = 'ProductLine IS NOT NULL', @quote = '';
+
+		-- Generate from a temp table
+			SELECT ProductID, Name INTO #tbl FROM Production.Product;
+			EXEC dbo.geninsert @objname = '#tbl', @quote = '', @script = 'S';
+
+		-- Generate a script for all tables in a database
 			EXEC sp_MSforeachtable 'EXEC dbo.geninsert @objname =''?'', @script =''S'', @quote =''''';
+
 */
 
 CREATE PROC [dbo].[geninsert]
@@ -66,6 +91,7 @@ CREATE PROC [dbo].[geninsert]
 		@script     CHAR(1) = 'I' /* I = Inserts, S = Single Insert, M = Merge, U = Upsert */,
 		@mergekey   NVARCHAR(MAX) = N'',
 		@where      NVARCHAR(MAX) = N'',
+		@targetname NVARCHAR(MAX) = N'',
 		@identity   BIT = 1,
 		@rowversion BIT = 0,
 		@filestream BIT = 0,
@@ -75,7 +101,8 @@ CREATE PROC [dbo].[geninsert]
 		@printsql   BIT = 0 -- Print dynamic SQL for debug only
 )
 AS
-BEGIN;
+BEGIN TRY;
+
 		SET NOCOUNT ON;
 
 		DECLARE	@object_id BIGINT,
@@ -104,7 +131,8 @@ BEGIN;
 				@rowversion = ISNULL(@rowversion,0),
 				@filestream = ISNULL(@filestream,0),
 				@geo = ISNULL(@geo,0),
-				@qt = 1;
+				@qt = 1,
+				@script = UPPER(@script);
 
 		IF		CAST(SERVERPROPERTY('ProductMajorVersion') AS SMALLINT) >= 13
 				/* Style 3 improves the accuracy of float-string conversion in SQL Server 2016 */
@@ -136,7 +164,6 @@ BEGIN;
 		AND		@tmp_object_id IS NULL
 		BEGIN	;
 				RAISERROR('Specified object not found',16,1);
-				RETURN -1;
 		END;
 
 		/* Raiserror if script option is invalid */
@@ -144,19 +171,14 @@ BEGIN;
 		OR		@script NOT IN ('I','S','M','U')
 		BEGIN	;
 				RAISERROR('Invalid @script option. Specify I,S,M or U. I = Inserts, S = Single Insert, M = Merge, U = Upsert',16,1);
-				RETURN -1;
 		END;
 
 		/* Specified table object_id in current db */
 		IF		@object_id IS NOT NULL
 		SELECT	@fullobjectname =
 					CASE WHEN @qt = 1
-						THEN QUOTENAME(OBJECT_SCHEMA_NAME(@object_id), @quote)
-						ELSE OBJECT_SCHEMA_NAME(@object_id)
-					END+N'.'+
-					CASE WHEN @qt = 1
-						THEN QUOTENAME(OBJECT_NAME(@object_id), @quote)
-						ELSE OBJECT_NAME(@object_id)
+						THEN QUOTENAME(OBJECT_SCHEMA_NAME(@object_id), @quote)+N'.'+QUOTENAME(OBJECT_NAME(@object_id), @quote)
+						ELSE OBJECT_SCHEMA_NAME(@object_id)+N'.'+OBJECT_NAME(@object_id)
 					END,
 				@sqlobjectname = QUOTENAME(OBJECT_SCHEMA_NAME(@object_id))+N'.'+QUOTENAME(OBJECT_NAME(@object_id)),
 				@identity =
@@ -176,6 +198,14 @@ BEGIN;
 						FROM	tempdb.sys.identity_columns i
 						WHERE	i.object_id = @tmp_object_id) =1
 				THEN	1 ELSE 0 END;
+
+		/* Override the target @fullobjectname if a different target name was specified */
+		IF		@targetname > N''
+		SET		@fullobjectname =
+					CASE WHEN @qt = 1
+						THEN COALESCE(QUOTENAME(PARSENAME(@targetname,2), @quote)+N'.',N'')+QUOTENAME(PARSENAME(@targetname,1), @quote)
+						ELSE @targetname
+					END;
 
 		/* Default page size. 1000 = max allowed for a INSERT-SELECT row-value constructor, otherwise 100000 */
 		IF		ISNULL(@page,0) < 1
@@ -255,7 +285,6 @@ BEGIN;
 				AND		@identity = 0
 				BEGIN	;
 						RAISERROR('MERGE requires a merge key but no unique index was found. Specify with @mergekey parameter instead.',16,1);
-						RETURN -1;
 				END;
 		END;
 
@@ -396,7 +425,6 @@ BEGIN;
 		OR		@ColumnList = N''
 		BEGIN	;
 				RAISERROR('No valid columns in the specified table',16,1);
-				RETURN -1;
 		END;
 
 		/* Tidy up the dynamic SQL delimiters */
@@ -553,4 +581,17 @@ BEGIN;
 
 		RETURN	0;
 
-END
+END TRY
+BEGIN CATCH;
+
+		DECLARE	@errmsg NVARCHAR(4000),
+				@errsev INT;
+
+		SELECT	@errmsg = ERROR_MESSAGE(),
+				@errsev = ERROR_SEVERITY();
+
+		RAISERROR(@errmsg, @errsev, 1);
+
+		RETURN -1;
+
+END CATCH;
