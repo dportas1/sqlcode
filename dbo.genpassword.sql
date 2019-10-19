@@ -6,12 +6,12 @@
 
 	Parameters:
 
-	@size	Total number of characters required
-	@lc		Minimum number of lower-case letters required (zero means no lower-case)
-	@uc		Minimum number of upper-case letters required (zero means no upper-case)
-	@num	Minimum number of numeric digits required (zero means no numbers)
-	@sym	Minimum number of symbol characters required (zero means no symbols)
-	@pwd	Output parameter for generated password
+	@size   Total number of characters required
+	@lc     Minimum number of lower-case letters required (zero means no lower-case)
+	@uc     Minimum number of upper-case letters required (zero means no upper-case)
+	@numc   Minimum number of numeric digits required (zero means no numbers)
+	@sym    Minimum number of symbol characters required (zero means no symbols)
+	@pwd    Output parameter for generated password
 
 */
 CREATE OR ALTER PROCEDURE dbo.genpassword
