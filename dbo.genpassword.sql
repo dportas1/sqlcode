@@ -68,12 +68,8 @@ BEGIN;
 		WHILE @charsetlength > 1 AND LEN(@pwd) < @size /* repeat until we reach the required size */
 		BEGIN;
 
-			SELECT	/* Mix the character set a little */
-					@charsetoffset = @charsetlength-ABS(CHECKSUM(NEWID()))%(@charsetlength/2),
-					@charset = SUBSTRING(@charset,@charsetoffset+1,@charsetlength)
-								+LEFT(@charset,@charsetoffset),
-					/* Generate a random number */
-					@seednum = RIGHT('9023716854923716854'
+			/* Generate a random number */
+			SET		@seednum = RIGHT('9023716854923716854'
 										+REPLACE(REPLACE(CAST(ABS(CHECKSUM(NEWID())) AS NVARCHAR(40))
 										+CAST(ABS(CHECKSUM(NEWID())) AS NVARCHAR(40))
 										+CAST(ABS(CHECKSUM(NEWID())) AS NVARCHAR(40))
@@ -81,9 +77,13 @@ BEGIN;
 										+CAST(ABS(CHECKSUM(NEWID())) AS NVARCHAR(40)),' ',''),'.','')
 									,18);
 
-					/* Turn the random number into a password string*/
 			WHILE	@seednum > 0
-					SELECT	@pwd = SUBSTRING(@charset, @seednum % @charsetlength + 1,1) + COALESCE(@pwd,N''),
+					SELECT	/* Mix the character set a little */
+							@charsetoffset = @charsetlength-ABS(CHECKSUM(NEWID()))%(@charsetlength/2),
+							@charset = SUBSTRING(@charset,@charsetoffset+1,@charsetlength)
+								+LEFT(@charset,@charsetoffset),
+							/* Turn the random number into a password string*/
+							@pwd = SUBSTRING(@charset, @seednum % @charsetlength + 1,1) + COALESCE(@pwd,N''),
 							@seednum = @seednum / @charsetlength;
 
 		END;
