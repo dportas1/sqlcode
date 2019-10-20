@@ -1,5 +1,5 @@
 /*
-	genpassword.sql
+	genpassword.sql   v1.1
 	Generates random passwords - MS SQL Server 2016
 
 	Public domain. No warranties.
@@ -9,7 +9,7 @@
 	@size   Total number of characters required
 	@lc     Minimum number of lower-case letters required (zero means no lower-case)
 	@uc     Minimum number of upper-case letters required (zero means no upper-case)
-	@numc   Minimum number of numeric digits required (zero means no numbers)
+	@num    Minimum number of numeric digits required (zero means no numbers)
 	@sym    Minimum number of symbol characters required (zero means no symbols)
 	@pwd    Output parameter for generated password
 
@@ -31,7 +31,7 @@ BEGIN;
 			@ucchar NVARCHAR(128),
 			@numchar NVARCHAR(128),
 			@symchar NVARCHAR(128),
-			@try TINYINT,
+			@try SMALLINT,
 			@seednum BIGINT,
 			@charsetlength TINYINT,
 			@charsetoffset TINYINT;
@@ -48,8 +48,9 @@ BEGIN;
 			@ucchar  = N'ABCDEFGHIJKLMNPQRSTUVWXYZ', /* excludes O to avoid confusion with zero */
 			@lcchar  = N'abcdefghijklmnopqrstuvwxyz',
 			@numchar = N'123456789', /* excludes zero */
-			@symchar = N'-,;+$!',
+			@symchar = N'-,;+$!.',
 			
+			/* Now define the composite character set we are actually going to use */
 			@charset =
 			  CASE WHEN @lc  > 0 THEN @lcchar  ELSE N'' END
 			+ CASE WHEN @uc  > 0 THEN @ucchar  ELSE N'' END
@@ -60,7 +61,7 @@ BEGIN;
 			@pwd = N'',
 			@try = 0;
 
-	WHILE @pwd = N'' AND @try < 100 /* Loop: try upto 100 times to get a good password */
+	WHILE @pwd = N'' AND @try < 900 /* Loop: try upto 900 times to get a good password */
 	BEGIN;
 
 		SET @try = @try + 1;
@@ -94,7 +95,7 @@ BEGIN;
 		IF NOT ( @pwd LIKE REPLICATE(N'%['+@lcchar+N']',@lc)+N'%' COLLATE Latin1_General_CS_AS
 				AND @pwd LIKE REPLICATE(N'%['+@ucchar+N']',@uc)+N'%' COLLATE Latin1_General_CS_AS
 				AND @pwd LIKE REPLICATE(N'%['+@numchar+N']',@num)+N'%' COLLATE Latin1_General_CS_AS
-				AND @pwd LIKE REPLICATE(N'%['+@symchar+N']',@sym)+N'%' COLLATE Latin1_General_CS_AS )
+				AND @pwd LIKE REPLICATE(N'%[^'+@lcchar+@ucchar+@numchar+']',@sym)+N'%' COLLATE Latin1_General_CS_AS )
 		SET @pwd = N'';
 
 	END;
@@ -107,6 +108,6 @@ GO
 
 /* Generate some passwords */
 DECLARE @pass NVARCHAR(MAX);
-EXEC GenPassword @size=10, @lc=2, @uc=2, @num=1, @sym=1, @pwd = @pass OUT;
+EXEC GenPassword @size=10, @lc=6, @uc=1, @num=1, @sym=1 ;
 
-GO 10
+GO 100
