@@ -1,5 +1,5 @@
 /*
-	genpassword.sql   v2.0
+	genpassword.sql   v2.1
 	Generates random passwords - MS SQL Server 2016
 
 	Public domain. No warranties.
@@ -13,8 +13,15 @@
 	@sym        Minimum number of symbol characters required (zero means no symbols)
 	@pwd        Output parameter for generated password
 	@symset     Set of (non-alpha, non-numeric) symbols
-	@leetsafe   excludes l,O,0
-
+	@leetsafe   Excludes l,O,0
+	@patt       Specifies a pattern of characters which the password must match 
+                If len(@patt) is shorter than the password then any characters are permitted after that length 
+                The following characters are valid in the pattern
+                  0 = digit
+                  L = letter
+                  A = letter or digit
+                  & = any character
+                Example: @patt = 'LL' means the password must begin with two letters
 */
 CREATE OR ALTER PROCEDURE dbo.genpassword
 (
@@ -25,7 +32,9 @@ CREATE OR ALTER PROCEDURE dbo.genpassword
 	@sym      TINYINT = NULL,
 	@pwd      NVARCHAR(256) = NULL OUT,
 	@symset   NVARCHAR(256) = NULL,
-	@leetsafe BIT = 1
+	@leetsafe BIT = 1,
+	@patt     NVARCHAR(256) = N''
+
 )
 AS
 BEGIN;
@@ -48,6 +57,7 @@ BEGIN;
 			@num    = COALESCE(@num,0),
 			@sym    = COALESCE(@sym,0),
 			@sympat = N'',
+			@patt   = REPLACE(REPLACE(REPLACE(COALESCE(@patt,N''),N'0',N'[0-9]'),N'L',N'[A-Z]'),N'&',N'_')+N'%',
 			/* If no complexity requirements specified then default to lower-case only */
 			@lc     = CASE WHEN @lc + @uc + @num + @sym = 0 THEN 1 ELSE @lc END;
 
@@ -111,7 +121,8 @@ BEGIN;
 				AND @pwd LIKE REPLICATE(N'%['+@ucchar+N']',@uc)+N'%' COLLATE Latin1_General_CS_AS
 				AND @pwd LIKE REPLICATE(N'%['+@numchar+N']',@num)+N'%' COLLATE Latin1_General_CS_AS
 				AND @pwd LIKE REPLICATE(N'%['+@sympat+']',@sym)+N'%' COLLATE Latin1_General_CS_AS
-									ESCAPE N'x' COLLATE Latin1_General_CS_AS)
+									ESCAPE N'x' COLLATE Latin1_General_CS_AS
+				AND @pwd LIKE @patt COLLATE Latin1_General_CS_AS)
 			SET @pwd = N'';
 	END;
 
@@ -123,6 +134,6 @@ GO
 
 /* Generate some passwords */
 DECLARE @pass VARCHAR(MAX);
-EXEC GenPassword @size=10, @lc=1, @uc=1, @num=1, @sym=1, @leetsafe = 1;
+EXEC GenPassword @size=10, @lc=1, @uc=1, @num=1, @sym=1, @leetsafe = 1, @patt ='L';
 
 GO 100
