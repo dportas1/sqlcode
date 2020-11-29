@@ -15,13 +15,13 @@
 	@symset     Set of (non-alpha, non-numeric) symbols
 	@leetsafe   Excludes l,O,0
 	@patt       Specifies a pattern of characters which the password must match 
-                If len(@patt) is shorter than the password then any characters are permitted after that length 
-                The following characters are valid in the pattern
-                  0 = digit
-                  L = letter
-                  A = letter or digit
-                  & = any character
-                Example: @patt = 'LL' means the password must begin with two letters
+	            If len(@patt) is shorter than the password then any characters are permitted after that length 
+	            The following characters are valid in the pattern
+	              0 = digit
+	              L = letter
+	              A = letter or digit
+	              & = any character
+	            Example: @patt = 'LL' means the password must begin with two letters
 */
 CREATE OR ALTER PROCEDURE dbo.genpassword
 (
@@ -57,12 +57,11 @@ BEGIN;
 			@num    = COALESCE(@num,0),
 			@sym    = COALESCE(@sym,0),
 			@sympat = N'',
-			@patt   = REPLACE(REPLACE(REPLACE(COALESCE(@patt,N''),N'0',N'[0-9]'),N'L',N'[A-Z]'),N'&',N'_')+N'%',
+			@patt   = REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(@patt,N''),N'0',N'[0-9]'),N'A',N'[A-Z0-9]'),N'L',N'[A-Z]'),N'&',N'_')+N'%',
 			/* If no complexity requirements specified then default to lower-case only */
 			@lc     = CASE WHEN @lc + @uc + @num + @sym = 0 THEN 1 ELSE @lc END;
 
 			/* Set the upper-case, lower-case, numeric and symbol character sets */
-
 			IF @leetsafe = 1 OR @leetsafe IS NULL
 			BEGIN;
 				SELECT
@@ -117,12 +116,13 @@ BEGIN;
 						  , CAST(SUBSTRING(@randbin,LEN(@pwd)+1,1) % @charsetlength + 1 AS INT),1);
 
 		/* Check if the password meets complexity requirements. If not then set to '' so we can try again */
-		IF NOT ( @pwd LIKE REPLICATE(N'%['+@lcchar+N']',@lc)+N'%' COLLATE Latin1_General_CS_AS
-				AND @pwd LIKE REPLICATE(N'%['+@ucchar+N']',@uc)+N'%' COLLATE Latin1_General_CS_AS
-				AND @pwd LIKE REPLICATE(N'%['+@numchar+N']',@num)+N'%' COLLATE Latin1_General_CS_AS
-				AND @pwd LIKE REPLICATE(N'%['+@sympat+']',@sym)+N'%' COLLATE Latin1_General_CS_AS
-									ESCAPE N'x' COLLATE Latin1_General_CS_AS
-				AND @pwd LIKE @patt COLLATE Latin1_General_CS_AS)
+		IF		NOT (@pwd LIKE @patt COLLATE Latin1_General_CI_AS)
+				 OR
+				NOT ( @pwd LIKE REPLICATE(N'%['+@lcchar+N']',@lc)+N'%' COLLATE Latin1_General_CS_AS
+					AND @pwd LIKE REPLICATE(N'%['+@ucchar+N']',@uc)+N'%' COLLATE Latin1_General_CS_AS
+					AND @pwd LIKE REPLICATE(N'%['+@numchar+N']',@num)+N'%' COLLATE Latin1_General_CS_AS
+					AND @pwd LIKE REPLICATE(N'%['+@sympat+']',@sym)+N'%' COLLATE Latin1_General_CS_AS
+									ESCAPE N'x' COLLATE Latin1_General_CS_AS)
 			SET @pwd = N'';
 	END;
 
