@@ -138,6 +138,18 @@ BEGIN TRY;
 		EXEC sp_executesql	@Sql, N'@RowCount INT OUT', @RowCount OUT;
 		/* @RowCount returns the number of rows output by the original query */
 
+		/* Fix datetime/smalldatetime formatting
+		   Implicit conversion of these types is locale-specific and truncates the fractional seconds
+		   Convert to datetime2 format instead */
+		WITH d AS 
+		(
+		  SELECT txt
+		  FROM #unpivoted AS u
+		  JOIN #columns AS c
+		  ON u.colnum = c.colnum AND c.coltype IN ('datetime','smalldatetime')
+		)
+		UPDATE d SET txt = CAST(txt AS datetime2(0));
+
 		/* Recreate any null cells, which otherwise get left out by unpivot */
 		IF @RowCount > 0
 			WITH r AS
@@ -280,5 +292,3 @@ BEGIN CATCH;
 		RETURN -1;
 
 END CATCH;
-GO
-
