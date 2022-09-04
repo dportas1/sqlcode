@@ -10,7 +10,8 @@
 		@qry        NVARCHAR(MAX)   Query string
 		@width      SMALLINT        Width of display (default 100)
 		@drawchar   NCHAR(5)        Table borders character set (default: "-|+|+")
-		@topborder  BIT             include top /bottom border, 1=yes(default), 0=no
+		@topborder  BIT             Include top /bottom border? 1=yes(default), 0=no
+		@padding    TINYINT         Number of extra spaces on the right of each column (default 0)
 
 	Examples:
 
@@ -54,10 +55,11 @@
 
 CREATE OR ALTER PROC [dbo].[drawtable]
 (
-		@qry NVARCHAR(MAX),
-		@width SMALLINT = 100,
+		@qry NVARCHAR(MAX) = N'SELECT ''Please specify a query'' [@qry];',
+		@width SMALLINT = NULL,
 		@drawchar NCHAR(5) = '-|+|+',
 		@topborder BIT = 1,
+		@padding TINYINT = 0,
 		@printsql BIT = 0,
 		@execsql BIT = 1
 )
@@ -73,7 +75,20 @@ BEGIN TRY;
 				@Adjust FLOAT,
 				@RowCount SMALLINT,
 				@ob NVARCHAR(1),
-				@ox NVARCHAR(1);
+				@ox NVARCHAR(1),
+				@err nvarchar(4000);
+
+		IF @drawchar = N'MS' -- MSSQL text results style
+			SELECT @drawchar = N'-'
+				, @topborder = 0
+				, @padding = 0;
+
+		SET @width =
+			CASE
+				WHEN @width IS NULL THEN 100
+				WHEN @width <1 THEN 32767
+				ELSE @width
+			END;
 
 		SET @ob = LTRIM(SUBSTRING(@drawchar,4,1)); -- outside border |
 		SET @ox = LTRIM(SUBSTRING(@drawchar,5,1)); -- outside border +
@@ -83,33 +98,45 @@ BEGIN TRY;
 				,  @ob = COALESCE(NULLIF(@ob,''),NULLIF(@ox,''));
 
 		CREATE TABLE #unpivoted
-		(rownum SMALLINT NOT NULL, colnum VARCHAR(4) NOT NULL, txt NVARCHAR(255) NOT NULL, isanull TINYINT NOT NULL
+		(rownum SMALLINT NOT NULL, colnum VARCHAR(4) NOT NULL, txt NVARCHAR(255) NOT NULL, isanull BIT NOT NULL
 		, PRIMARY KEY (rownum, colnum));
 
 		/* Retrieve metadata for the specified query */
 		SELECT	colname, colorder
 				, CAST(colorder AS VARCHAR(4)) AS colnum
 				, CAST(0 AS SMALLINT) AS colwidth
-				, LEN(colname) AS minwidth
+				, LEN(colname)+@padding AS minwidth
 				, coltype
-				, CASE WHEN    coltype LIKE 'varchar(%)'
-							OR coltype LIKE 'nvarchar(%)'
-							OR coltype LIKE 'char(%)'
-							OR coltype LIKE 'nchar(%)'
+				, CASE WHEN    coltype LIKE N'varchar(%)'
+							OR coltype LIKE N'nvarchar(%)'
+							OR coltype LIKE N'char(%)'
+							OR coltype LIKE N'nchar(%)'
 					THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS willtrunc
+				, error_number
+				, error_message
 		INTO	#columns
 		FROM
 		(		SELECT COALESCE(LEFT(c.name,50),'') AS colname
 				, c.system_type_name AS coltype
 				, ROW_NUMBER() OVER (ORDER BY c.column_ordinal) AS colorder
+				, error_number
+				, error_message
 				FROM sys.dm_exec_describe_first_result_set(@qry,null,0) AS c
 		) AS t;
 
 		SET @ColCount = @@ROWCOUNT;
 		SET @ColumnList = (SELECT STRING_AGG(QUOTENAME(colnum),',') FROM #columns);
 
+		IF EXISTS (SELECT 1 FROM #columns WHERE error_number IS NOT NULL)
+		BEGIN;
+			/* Something wrong with the query */
+			SET @err = (SELECT TOP 1 CONCAT('Error ',error_number,' ',error_message) FROM #columns);
+			PRINT @err;
+			RETURN -1;
+		END;
+
 		/* Unpivot the output of the specified query */
-		SET @Sql = 'WITH n AS
+		SET @Sql = N'WITH n AS
 			(SELECT value AS v, CAST(NULL AS nvarchar(MAX)) AS x
 			 FROM STRING_SPLIT(''@@ColumnList'' , '',''))
 
@@ -143,12 +170,12 @@ BEGIN TRY;
 		   Convert to datetime2 format instead */
 		WITH d AS 
 		(
-		  SELECT txt
+		  SELECT txt, TRY_CAST(txt AS datetime2(0)) AS dt2
 		  FROM #unpivoted AS u
 		  JOIN #columns AS c
-		  ON u.colnum = c.colnum AND c.coltype IN ('datetime','smalldatetime')
+		  ON u.colnum = c.colnum AND c.coltype IN (N'datetime',N'smalldatetime')
 		)
-		UPDATE d SET txt = CAST(txt AS datetime2(0));
+		UPDATE d SET txt = dt2 WHERE dt2 IS NOT NULL;
 
 		/* Recreate any null cells, which otherwise get left out by unpivot */
 		IF @RowCount > 0
@@ -161,7 +188,7 @@ BEGIN TRY;
 			  WHERE rownum < @RowCount
 			)
 			INSERT INTO #unpivoted (rownum, colnum, txt, isanull)
-			SELECT r.rownum, c.colnum, 'NULL', 1
+			SELECT r.rownum, c.colnum, N'NULL', 1
 			FROM r, #columns AS c
 			WHERE NOT EXISTS
 					(	SELECT *
@@ -176,20 +203,21 @@ BEGIN TRY;
 			,(	SELECT MAX(LEN(u.txt))
 				FROM #unpivoted AS u
 				WHERE u.colnum = t.colnum) AS Widest
-			,(	SELECT MAX(u.isanull)
+			,(	SELECT TOP (1) 1
 				FROM #unpivoted AS u
-				WHERE u.colnum = t.colnum) AS HasNulls
+				WHERE u.colnum = t.colnum
+				AND u.isanull=1) AS HasNulls
 			FROM #columns AS t),
 		c AS
 		(SELECT colwidth, minwidth, colname, Widest,
-			CASE WHEN minwidth < 4 AND HasNulls = 1
-			THEN 4
+			CASE WHEN minwidth < 4+@padding AND HasNulls = 1
+			THEN 4+@padding
 			ELSE minwidth END AS newmin
 			FROM co)
 		UPDATE c SET
 			minwidth = newmin,
-			colwidth = CASE WHEN Widest > newmin
-							THEN Widest
+			colwidth = CASE WHEN Widest+@padding > newmin
+							THEN Widest+@padding
 							ELSE newmin END;
 
 		SET @TableWidth = (SELECT SUM(colwidth)+@ColCount-1+LEN(@ob)*2 FROM #columns);
@@ -240,7 +268,7 @@ BEGIN TRY;
 		FROM #columns;
 
 		/* Pivot the data into a single-column table */
-		SET @Sql = 'WITH u AS
+		SET @Sql = N'WITH u AS
 			(SELECT CONCAT(
 				CASE WHEN c.colorder = 1 THEN
 					CASE WHEN u.rownum IN (0,-2,9999) THEN ''@@ox'' ELSE ''@@ob'' END
