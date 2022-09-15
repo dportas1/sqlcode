@@ -135,6 +135,9 @@ BEGIN TRY;
 			RETURN -1;
 		END;
 
+		/* String quoting */
+		SET @qry = CONCAT(N'''',REPLACE(@qry,N'''',N''''''),N'''');
+
 		/* Unpivot the output of the specified query */
 		SET @Sql = N'WITH n AS
 			(SELECT value AS v, CAST(NULL AS nvarchar(MAX)) AS x
@@ -146,7 +149,7 @@ BEGIN TRY;
 			FROM n PIVOT (MAX(x) FOR v IN (@@ColumnList)) AS p;
 
 			-- implicit conversion to nvarchar(MAX)
-			INSERT TOP (1000) INTO #sample (@@ColumnList) @@Query;
+			INSERT TOP (1000) INTO #sample (@@ColumnList) EXEC (@@Query);
 			SET @RowCount = @@ROWCOUNT;
 
 			INSERT INTO #unpivoted (rownum, txt, colnum, isanull)
